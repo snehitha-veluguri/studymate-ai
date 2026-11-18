@@ -5,7 +5,7 @@ const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY!,
 });
 
-const MODEL = "gemini-3.8-flash";
+const MODEL = "gemini-3.5-flash-lite";
 
 export interface RevisionTopic {
   topic: string;
@@ -27,6 +27,44 @@ export interface RevisionPlan {
   totalStudyMinutes: number;
   tasks: RevisionTask[];
   advice: string;
+}
+
+async function generateWithRetry(contents: string) {
+  const delays = [3000, 6000, 12000];
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await ai.models.generateContent({
+        model: MODEL,
+        contents,
+      });
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : String(error);
+
+      const isTemporary =
+        message.includes("503") ||
+        message.includes("UNAVAILABLE") ||
+        message.includes("high demand") ||
+        message.includes("overloaded") ||
+        message.includes("429") ||
+        message.includes("RESOURCE_EXHAUSTED");
+
+      if (!isTemporary || attempt === 3) {
+        throw error;
+      }
+
+      console.warn(
+        `[Revision Plan] Gemini temporarily unavailable. Retry ${attempt + 1}/3 in ${delays[attempt] / 1000} seconds.`
+      );
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, delays[attempt])
+      );
+    }
+  }
+
+  throw new Error("Revision plan generation failed after retries.");
 }
 
 export async function generateRevisionPlan(
@@ -60,9 +98,7 @@ export async function generateRevisionPlan(
     }
   }
 
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: `
+  const response = await generateWithRetry(`
 You are StudyMate AI, a personalized study planner.
 
 Create a practical revision plan for a student.
@@ -101,8 +137,7 @@ Required structure:
 
 Topic performance:
 ${JSON.stringify(topics, null, 2)}
-`,
-  });
+`);
 
   const responseText = response.text?.trim();
 
